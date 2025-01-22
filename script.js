@@ -166,7 +166,7 @@ function Firework(sx, sy, tx, ty) {
     this.speed = 2;
     this.acceleration = 1.05;
     this.brightness = random(50, 70);
-    if (Math.random() >= 0.7) {
+    if (Math.random() >= 0.8) {
         playSound('launch', 0.5);
     }
 
@@ -287,13 +287,13 @@ function createParticles(x, y) {
 
 // Create super particles (optimized)
 function createSuperParticles(x, y) {
-    let superParticleCount = 70;
+    let superParticleCount = 80;
     while (superParticleCount--) {
         particles.push(new Particle(x, y));
     }
-    playSound('explosion', 0.5);
+    playSound('explosion', 0.8);
 
-    let miniFireworkCount = 10; // Giảm từ 10 xuống 5
+    let miniFireworkCount = 15; // Giảm từ 10 xuống 5
     while (miniFireworkCount--) {
         setTimeout(() => {
             const angle = random(0, Math.PI * 2);
@@ -301,7 +301,7 @@ function createSuperParticles(x, y) {
             const miniX = x + Math.cos(angle) * distance;
             const miniY = y + Math.sin(angle) * distance;
             playClusterSound();
-            let miniParticleCount = 20; // Giảm từ 15 xuống 10
+            let miniParticleCount = 30; // Giảm từ 15 xuống 10
             while (miniParticleCount--) {
                 particles.push(new MiniParticle(miniX, miniY));
             }
@@ -312,7 +312,9 @@ function createSuperParticles(x, y) {
 
 // Main animation loop (optimized)
 function loop() {
-    const timerTotal = (Math.random() >= 0.8) ? 60 : 30;
+    const timerTotal = 60;
+    const clusterProbability = 0.2; // Xác suất tạo chùm pháo hoa (10%)
+    const clusterSize = 7;
     requestAnimFrame(loop);
 
     if (paused) return;
@@ -340,7 +342,22 @@ function loop() {
 
     if (timerTick >= timerTotal) {
         if (!mousedown) {
-            fireworks.push(new Firework(cw / 2, ch, random(0, cw), random(0, ch / 2)));
+            // Xác suất tạo chùm pháo hoa
+            if (Math.random() < clusterProbability) {
+                // Tạo chùm pháo hoa
+                for (let i = 0; i < clusterSize; i++) {
+                    fireworks.push(new Firework(cw / 2 + random(-50, 50), ch, random(cw / 2 - 100, cw / 2 + 100), random(0, ch / 2)));
+                }
+            } else {
+                // Tạo một pháo hoa bình thường
+                fireworks.push(new Firework(cw / 2, ch, random(0, cw), random(0, ch / 2)));
+            }
+            timerTick = 0;
+        } else {
+            // Tạo nhiều pháo hoa khi nhấn chuột (tùy chọn)
+            for (let i = 0; i < 3; i++) {
+                fireworks.push(new Firework(cw / 2, ch, random(mx - 30, mx + 30), random(my - 30, my + 30)));
+            }
             timerTick = 0;
         }
     } else {
