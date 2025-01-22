@@ -1,12 +1,39 @@
+/* basic styles for black background and crosshair cursor */
 body {
-    margin: 0;
-    overflow: hidden;
     background-color: black;
+    background-size: cover;
+    /* Đảm bảo hình ảnh bao phủ toàn bộ màn hình */
+    background-repeat: no-repeat;
+    /* Ngăn lặp lại hình ảnh */
+    background-position: center;
+    /* Căn giữa hình ảnh */
+    overflow: hidden;
+    /* Ẩn thanh cuộn */
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    /* Loại bỏ khoảng trống mặc định */
+    padding: 0;
 }
 
-#fireworksCanvas {
+
+canvas {
+    overflow: hidden;
     width: 100%;
-    height: 100vh;
-    background: rgba(0, 0, 0, 0.2);
-    /* Semi-transparent background for trails */
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+#canvas {
+    padding: 0;
+    margin: 0;
+    /* Loại bỏ margin mặc định */
+    border: none;
+    /* Loại bỏ border mặc định */
+    display: block;
+    opacity: 0;
+    /* Độ mờ ban đầu là 0 (hoàn toàn trong suốt) */
+    transition: opacity 2s ease-in-out;
+    /* Hiệu ứng chuyển đổi opacity trong 1 giây */
 }

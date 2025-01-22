@@ -1,279 +1,418 @@
-const canvas = document.getElementById('fireworksCanvas');
+// Request Animation Frame shim (optimized)
+const requestAnimFrame = (function () {
+    return window.requestAnimationFrame ||
+        window.webkitRequestAnimationFrame ||
+        window.mozRequestAnimationFrame ||
+        function (callback) {
+            window.setTimeout(callback, 1000 / 60);
+        };
+})();
+
+// Basic setup
+const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+let cw = window.innerWidth;
+let ch = window.innerHeight;
+const fireworks = [];
+const particles = [];
+let hue = 120;
+const limiterTotal = 5;
+let limiterTick = 0;
 
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+let timerTick = 0;
+let mousedown = false;
+let paused = true;
+let mx, my;
+const background = new Image();
+background.src = 'https://i.redd.it/w6xk1vhor8ae1.jpeg';
 
-const launchSound = document.getElementById('launchSound');
-const burstSound = document.getElementById('burstSound');
+// Set initial canvas dimensions
+canvas.width = cw;
+canvas.height = ch;
 
-let fireworks = [];
-let particles = [];
-let isPageActive = true;
+// Cache canvas offset
+let canvasOffsetX = canvas.offsetLeft;
+let canvasOffsetY = canvas.offsetTop;
 
-// Utility function to get random number within a range
+// Audio setup with Web Audio API (optimized)
+let audioContext;
+let audioBuffers = {};
+let isAudioInitialized = false;
+
+// Audio pool configuration
+const CLUSTER_POOL_SIZE = 20;
+const clusterSourcePool = []; // Start with an empty array
+let currentClusterIndex = 0;
+let lastClusterTime = 0;
+
+// Initialize audio system (optimized)
+async function initAudio() {
+    if (audioContext) return; // Already initialized
+
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    const audioFiles = {
+        launch: './Media/launch.mp3',
+        explosion: './Media/explode.mp3',
+        cluster: './Media/cluster.mp3'
+    };
+
+    try {
+        const audioBuffersArray = await Promise.all(
+            Object.entries(audioFiles).map(async ([key, url]) => {
+                const response = await fetch(url);
+                const arrayBuffer = await response.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                return [key, audioBuffer];
+            })
+        );
+
+        audioBuffers = Object.fromEntries(audioBuffersArray);
+        isAudioInitialized = true;
+    } catch (error) {
+        console.error('Error initializing audio:', error);
+    }
+}
+
+// Play sound function using Web Audio API (optimized)
+function playSound(type, volume = 0.5) {
+    if (!isAudioInitialized || !audioContext || audioContext.state !== 'running') return;
+
+    const source = audioContext.createBufferSource();
+    const gainNode = audioContext.createGain();
+
+    source.buffer = audioBuffers[type];
+    gainNode.gain.value = volume;
+
+    source.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    source.start(0);
+
+    source.onended = () => {
+        source.disconnect();
+        gainNode.disconnect();
+    };
+
+    return { source, gainNode };
+}
+
+// Play cluster sound with delay (optimized)
+function playClusterSound() {
+    if (!isAudioInitialized) return;
+
+    const now = audioContext.currentTime;
+    if (now - lastClusterTime >= 0.05) { // 50ms delay
+        const { source } = playSound('cluster', 0.3);
+
+        // Add source to the pool if there's space
+        if (clusterSourcePool.length < CLUSTER_POOL_SIZE) {
+            clusterSourcePool.push(source);
+        } else {
+            // Reuse an existing source from the pool
+            clusterSourcePool[currentClusterIndex] = source;
+        }
+
+        currentClusterIndex = (currentClusterIndex + 1) % CLUSTER_POOL_SIZE;
+        lastClusterTime = now;
+    }
+}
+
+// Handle first interaction
+function handleFirstInteraction() {
+    initAudio().then(() => {
+        audioContext.resume();
+    });
+
+    ['click', 'touchstart', 'keydown'].forEach(event => {
+        document.removeEventListener(event, handleFirstInteraction);
+    });
+}
+
+// Add first interaction listeners
+['click', 'touchstart', 'keydown'].forEach(event => {
+    document.addEventListener(event, handleFirstInteraction);
+});
+
+// Utility functions
 function random(min, max) {
     return Math.random() * (max - min) + min;
 }
 
-// Function to generate random RGBA color
-function randomRGBA() {
-    const r = random(0, 255);
-    const g = random(0, 255);
-    const b = random(0, 255);
-    const a = 1; // Default alpha is 1
-    return `rgba(${r}, ${g}, ${b}, ${a})`;
+function calculateDistance(p1x, p1y, p2x, p2y) {
+    const xDistance = p1x - p2x;
+    const yDistance = p1y - p2y;
+    return Math.sqrt(Math.pow(xDistance, 2) + Math.pow(yDistance, 2));
 }
 
 // Firework class
-class Firework {
-    constructor(x, y, targetX, targetY, color, speed) {
-        this.x = x;
-        this.y = y;
-        this.targetX = targetX;
-        this.targetY = targetY;
-        this.color = color;
-        this.speed = speed;
-        this.angle = Math.atan2(targetY - y, targetX - x);
-        this.radius = 3;
-        this.launchSoundPlayed = false;
-        this.gravity = 0.2;
-        this.hasExploded = false;
-        this.isSuper = false;
-        this.multiColorProbability = 0.2;
-        this.isMultiColor = Math.random() < this.multiColorProbability;
+function Firework(sx, sy, tx, ty) {
+    this.x = sx;
+    this.y = sy;
+    this.sx = sx;
+    this.sy = sy;
+    this.tx = tx;
+    this.ty = ty;
+    this.distanceToTarget = calculateDistance(sx, sy, tx, ty);
+    this.distanceTraveled = 0;
+    this.coordinates = [];
+    this.coordinateCount = 3;
+
+    while (this.coordinateCount--) {
+        this.coordinates.push([this.x, this.y]);
     }
 
-    update() {
-        if (!this.launchSoundPlayed) {
-            launchSound.currentTime = 0;
-            launchSound.play();
-            this.launchSoundPlayed = true;
-        }
-
-        this.x += Math.cos(this.angle) * this.speed;
-        this.y += Math.sin(this.angle) * this.speed + this.gravity;
-
-        this.gravity *= 1.01;
-        this.speed *= 0.99;
-
-        if (
-            (Math.abs(this.x - this.targetX) < 20 &&
-                Math.abs(this.y - this.targetY) < 20) ||
-            this.speed < 1
-        ) {
-            this.explode();
-            this.hasExploded = true;
-        }
+    this.angle = Math.atan2(ty - sy, tx - sx);
+    this.speed = 2;
+    this.acceleration = 1.05;
+    this.brightness = random(50, 70);
+    if (Math.random() >= 0.7) {
+        playSound('launch', 0.5);
     }
 
-    draw() {
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-        ctx.fillStyle = this.color;
-        ctx.fill();
-    }
-
-    explode() {
-        burstSound.currentTime = 0;
-        burstSound.play();
-
-        if (this.isSuper) {
-
-            const miniFireworkCount = 30;
-            for (let i = 0; i < miniFireworkCount; i++) {
-                const angle = (Math.PI * 2) * (i / miniFireworkCount);
-                const speed = random(2, 5);
-                const targetX = this.x + Math.cos(angle) * random(50, 150);
-                const targetY = this.y + Math.sin(angle) * random(50, 150);
-                // Tạo màu ngẫu nhiên cho mỗi miniFirework
-                const miniColor = randomRGBA();
-                const miniFirework = new Firework(
-                    this.x,
-                    this.y,
-                    targetX,
-                    targetY,
-                    miniColor,
-                    speed
-                );
-                miniFirework.isSuper = false;
-                miniFirework.isMultiColor = false;
-                fireworks.push(miniFirework);
-            }
-        } else {
-            // Nổ ra các hạt bình thường
-            const particleCount = 150;
-            const color = this.isMultiColor ? randomRGBA() : this.color;
-            for (let i = 0; i < particleCount; i++) {
-                particles.push(
-                    new Particle(
-                        this.x,
-                        this.y,
-                        color,
-                        random(0.5, 3),
-                        random(0, Math.PI * 2),
-                        random(1, 6)
-                    )
-                );
-            }
-        }
-    }
 }
+
+// Update firework (optimized)
+Firework.prototype.update = function (index) {
+    this.coordinates.pop();
+    this.coordinates.unshift([this.x, this.y]);
+
+    this.speed *= this.acceleration;
+
+    // Pre-calculate cos and sin
+    const cosAngle = Math.cos(this.angle);
+    const sinAngle = Math.sin(this.angle);
+
+    const vx = cosAngle * this.speed;
+    const vy = sinAngle * this.speed;
+
+    this.distanceTraveled = calculateDistance(this.sx, this.sy, this.x + vx, this.y + vy);
+
+    if (this.distanceTraveled >= this.distanceToTarget) {
+        if (Math.random() < 0.2) {
+            createSuperParticles(this.tx, this.ty);
+        } else {
+            createParticles(this.tx, this.ty);
+            playSound('explosion', 0.5);
+        }
+        fireworks.splice(index, 1);
+    } else {
+        this.x += vx;
+        this.y += vy;
+    }
+};
+
+// Draw firework
+Firework.prototype.draw = function () {
+    ctx.beginPath();
+    ctx.moveTo(this.coordinates[this.coordinates.length - 1][0], this.coordinates[this.coordinates.length - 1][1]);
+    ctx.lineTo(this.x, this.y);
+    ctx.strokeStyle = `hsl(${hue}, 100%, ${this.brightness}%)`;
+    ctx.stroke();
+};
 
 // Particle class
-class Particle {
-    constructor(x, y, color, size, angle, speed) {
-        this.x = x;
-        this.y = y;
-        this.color = color;
-        this.size = size;
-        this.angle = angle;
-        this.speed = speed;
-        this.friction = 0.95;
-        this.gravity = 0.3;
-        this.alpha = 1;
-        this.decay = random(0.0075, 0.015);
-        this.shrinkRate = random(0.01, 0.05);
-        this.wander = random(-1, 1);
+function Particle(x, y) {
+    this.x = x;
+    this.y = y;
+    this.coordinates = [];
+    this.coordinateCount = 5;
+
+    while (this.coordinateCount--) {
+        this.coordinates.push([this.x, this.y]);
     }
 
-    update() {
-        this.x += Math.cos(this.angle) * this.speed + this.wander;
-        this.y += Math.sin(this.angle) * this.speed + this.gravity;
-        this.speed *= this.friction;
-        this.alpha -= this.decay;
-        this.size -= this.shrinkRate;
+    this.angle = random(0, Math.PI * 2);
+    this.cosAngle = Math.cos(this.angle);
+    this.sinAngle = Math.sin(this.angle);
+    this.speed = random(1, 10);
+    this.friction = 0.95;
+    this.gravity = 1;
+    this.hue = random(hue - 50, hue + 50);
+    this.brightness = random(50, 80);
+    this.alpha = 1;
+    this.decay = random(0.015, 0.03);
+}
 
-        if (this.alpha <= 0 || this.size <= 0) {
-            particles.splice(particles.indexOf(this), 1);
-        }
+// Update particle (optimized)
+Particle.prototype.update = function (index) {
+    this.coordinates.pop();
+    this.coordinates.unshift([this.x, this.y]);
+    this.speed *= this.friction;
+    this.x += this.cosAngle * this.speed;
+    this.y += this.sinAngle * this.speed + this.gravity;
+    this.alpha -= this.decay;
+
+    if (this.alpha <= this.decay) {
+        particles.splice(index, 1);
     }
+};
 
-    draw() {
-        // Tính khoảng cách từ tâm vụ nổ (có thể là vị trí nổ của Firework)
-        const distanceFromExplosion = Math.sqrt(
-            Math.pow(this.x - this.explosionX, 2) +
-            Math.pow(this.y - this.explosionY, 2)
+// Draw particle
+Particle.prototype.draw = function () {
+    ctx.beginPath();
+    ctx.moveTo(this.coordinates[this.coordinates.length - 1][0], this.coordinates[this.coordinates.length - 1][1]);
+    ctx.lineTo(this.x, this.y);
+    ctx.strokeStyle = `hsla(${this.hue}, 100%, ${this.brightness}%, ${this.alpha})`;
+    ctx.stroke();
+};
+
+// MiniParticle class
+function MiniParticle(x, y) {
+    Particle.call(this, x, y);
+    this.speed = random(1, 7);
+    this.brightness = random(70, 90);
+    this.size = random(2, 4);
+    this.decay = random(0.01, 0.02);
+}
+
+MiniParticle.prototype = Object.create(Particle.prototype);
+MiniParticle.prototype.constructor = MiniParticle;
+
+// Draw particle (optimized)
+MiniParticle.prototype.draw = function () {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2, false);
+    ctx.fillStyle = `hsla(${this.hue}, 100%, ${this.brightness}%, ${this.alpha})`;
+    ctx.fill();
+};
+
+// Create particles
+function createParticles(x, y) {
+    let particleCount = 30;
+    while (particleCount--) {
+        particles.push(new Particle(x, y));
+    }
+}
+
+// Create super particles (optimized)
+function createSuperParticles(x, y) {
+    let superParticleCount = 70;
+    while (superParticleCount--) {
+        particles.push(new Particle(x, y));
+    }
+    playSound('explosion', 0.5);
+
+    let miniFireworkCount = 10; // Giảm từ 10 xuống 5
+    while (miniFireworkCount--) {
+        setTimeout(() => {
+            const angle = random(0, Math.PI * 2);
+            const distance = random(50, 100);
+            const miniX = x + Math.cos(angle) * distance;
+            const miniY = y + Math.sin(angle) * distance;
+            playClusterSound();
+            let miniParticleCount = 20; // Giảm từ 15 xuống 10
+            while (miniParticleCount--) {
+                particles.push(new MiniParticle(miniX, miniY));
+            }
+        }, 50
         );
-
-        // Điều chỉnh alpha dựa trên khoảng cách
-        const alpha = Math.max(
-            0,
-            this.alpha - distanceFromExplosion / 300
-        ); // Giảm alpha khi xa hơn
-
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-        ctx.fillStyle = this.color;
-        ctx.fill();
-        ctx.restore();
     }
 }
 
-// Function to create a firework
-function createFirework(x, y) {
-    const color = randomRGBA(); // Use randomRGBA()
-    const targetX = x || random(canvas.width * 0.2, canvas.width * 0.8);
-    const targetY = y || random(canvas.height * 0.1, canvas.height * 0.5);
-    const speed = random(8, 14);
-    fireworks.push(
-        new Firework(canvas.width / 2, canvas.height, targetX, targetY, color, speed)
-    );
-}
+// Main animation loop (optimized)
+function loop() {
+    const timerTotal = (Math.random() >= 0.8) ? 60 : 30;
+    requestAnimFrame(loop);
 
-// Function to create a super firework
-function createSuperFirework(x, y) {
-    const color = randomRGBA(); // Use randomRGBA()
-    const targetX = x || random(canvas.width * 0.2, canvas.width * 0.8);
-    const targetY = y || random(canvas.height * 0.1, canvas.height * 0.3);
-    const speed = random(4, 6);
-    const superFirework = new Firework(
-        canvas.width / 2,
-        canvas.height,
-        targetX,
-        targetY,
-        color,
-        speed
-    );
-    superFirework.isSuper = true;
-    superFirework.radius = 8;
-    superFirework.multiColorProbability = 0.3;
-    superFirework.isMultiColor = Math.random() < superFirework.multiColorProbability;
-    fireworks.push(superFirework);
-}
+    if (paused) return;
 
-// Automatic firework creation
+    // Clear the canvas before drawing
+    ctx.clearRect(0, 0, cw, ch);
 
-let isStart = false;
-// Manual firework creation on click
-canvas.addEventListener('click', (event) => {
-    if (isPageActive) {
-        isStart = true;
-        createFirework(event.clientX, event.clientY);
+    // Draw background image
+    ctx.drawImage(background, 0, 0, cw, ch);
+
+    // ctx.globalCompositeOperation = 'destination-out';
+    // ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+    // ctx.fillRect(0, 0, cw, ch);
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let i = fireworks.length - 1; i >= 0; i--) {
+        fireworks[i].draw();
+        fireworks[i].update(i);
     }
 
-});
-setInterval(() => {
-    if (isPageActive) { // Chỉ tạo pháo hoa nếu tab active
-        if (isStart) {
-            if (Math.random() < 0.1) {
-                createSuperFirework();
-            } else {
-                createFirework();
-            }
+    for (let j = particles.length - 1; j >= 0; j--) {
+        particles[j].draw();
+        particles[j].update(j);
+    }
+
+    if (timerTick >= timerTotal) {
+        if (!mousedown) {
+            fireworks.push(new Firework(cw / 2, ch, random(0, cw), random(0, ch / 2)));
+            timerTick = 0;
         }
-    }
-}, 500);
-
-// Animation loop
-function animate() {
-    if (!isPageActive) {
-        // Dừng vẽ và cập nhật nếu tab không active
-        requestAnimationFrame(animate); // Vẫn gọi requestAnimationFrame để tiếp tục theo dõi
-        return;
-    }
-
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Update and draw fireworks
-    for (let i = 0; i < fireworks.length; i++) {
-        if (fireworks[i]) {
-            fireworks[i]?.update();
-            fireworks[i]?.draw();
-            if (fireworks[i].hasExploded) {
-                fireworks.splice(i, 1);
-                i--;
-            }
-        }
-    }
-
-    // Update and draw particles
-    for (let i = 0; i < particles.length; i++) {
-        if (particles[i]) {
-            particles[i]?.update();
-            particles[i]?.draw();
-        }
-    }
-
-    requestAnimationFrame(animate);
-}
-
-animate();
-
-// Handle window resize
-window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-});
-
-// Thêm sự kiện visibilitychange
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        isPageActive = false;
     } else {
-        isPageActive = true;
+        timerTick++;
+    }
+}
+
+// Debounce function for resize event
+function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+// Event listeners
+canvas.addEventListener('mousemove', function (e) {
+    mx = e.pageX - canvasOffsetX;
+    my = e.pageY - canvasOffsetY;
+});
+
+canvas.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    mousedown = true;
+});
+
+canvas.addEventListener('mouseup', function (e) {
+    e.preventDefault();
+    paused = false;
+    mousedown = false;
+});
+
+document.addEventListener('keydown', function (e) {
+    if (e.code === 'Space') {
+        paused = !paused;
     }
 });
+
+window.addEventListener('resize', debounce(function () {
+    cw = window.innerWidth;
+    ch = window.innerHeight;
+    canvas.width = cw;
+    canvas.height = ch;
+    canvasOffsetX = canvas.offsetLeft;
+    canvasOffsetY = canvas.offsetTop;
+}, 250));
+
+window.addEventListener('unload', function () {
+    if (audioContext) {
+        audioContext.close();
+    }
+    clusterSourcePool.forEach(source => {
+        if (source) {
+            source.disconnect();
+        }
+    });
+});
+
+// Start animation after background image loads (optimized)
+background.onload = function () {
+    // Fade in the canvas using requestAnimationFrame
+    let opacity = 0;
+    function fadeIn() {
+        opacity += 0.05; // Adjust increment for smoother/faster fade
+        canvas.style.opacity = opacity;
+        if (opacity < 1) {
+            requestAnimationFrame(fadeIn);
+        } else {
+            loop(); // Start the loop only after fade-in is complete
+        }
+    }
+    requestAnimationFrame(fadeIn);
+};
